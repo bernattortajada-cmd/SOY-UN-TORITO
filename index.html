@@ -30,7 +30,7 @@
     <button id="start" class="btn">▶️ Iniciar cámara</button>
     <span class="pill"><span class="dot" id="eyeDot"></span>Ojos cerrados ▸ A</span>
     <span class="pill"><span class="dot" id="mouthDot"></span>Boca abierta ▸ B</span>
-  </div>
+  <
   <div class="log" id="log"></div>
 </div>
 <script>
@@ -47,8 +47,8 @@ window.addEventListener('unhandledrejection', e=>log('PROMISE REJECTION: '+(e.re
   const eyeDot = document.getElementById('eyeDot');
   const mouthDot = document.getElementById('mouthDot');
 
-  const audioA = new Audio('assets/glass_A_vocal_loop.mp3');
-  const audioB = new Audio('assets/glass_B_beat_loop.mp3');
+  const audioA = new Audio('assets/glass_A_vocal_loop.wav');
+  const audioB = new Audio('assets/glass_B_beat_loop.wav');
   audioA.loop = true; audioB.loop = true; audioA.volume = 0.85; audioB.volume = 0.9;
 
   let eyesClosed=false, mouthOpen=false;
