@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Glass Pulse — WebAR (prototype)</title>
+  <style>
+    :root { --bg:#0b0b0c; --fg:#e7e7ea; }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial;}
+    .app{display:grid;place-items:center;height:100%;gap:16px;padding:16px}
+    .stage{position:relative;width:min(92vw, 540px);aspect-ratio:9/16;border-radius:20px;overflow:hidden;box-shadow:0 15px 40px rgba(0,0,0,.45);background:#000}
+    video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform: scaleX(-1);} /* mirror */
+    canvas{position:absolute;inset:0;width:100%;height:100%;}
+    .ui{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center}
+    .btn{background:#1e1e22;border:1px solid #2b2b31;color:#f4f4f6;padding:10px 14px;border-radius:12px;cursor:pointer}
+    .pill{font-size:12px;opacity:.8}
+    .badge{padding:6px 10px;border-radius:999px;background:#17171a;border:1px solid #29292e}
+    .hint{font-size:13px;opacity:.8;text-align:center;max-width:540px}
+    .dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:#888;margin-right:6px}
+    .dot.on{background:#6ee7ff}
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <video id="cam" playsinline muted></video>
+    <canvas id="fx"></canvas>
+  </div>
+
+  <div class="ui">
+    <button id="start" class="btn">▶️ Iniciar cámara</button>
+    <span class="badge pill"><span class="dot" id="eyeDot"></span>Ojos cerrados ▸ Audio A</span>
+    <span class="badge pill"><span class="dot" id="mouthDot"></span>Boca abierta ▸ Audio B</span>
+  </div>
+  <p class="hint">Pon tus audios en <code>assets/</code>: <code>glass_A_vocal_loop.mp3</code> (voz) y <code>glass_B_beat_loop.mp3</code> (beat). <br>Nota: por seguridad del navegador, la cámara solo funciona si abres esto desde HTTPS o un servidor local.</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+<script>
+(async function(){
+  const video = document.getElementById('cam');
+  const canvas = document.getElementById('fx');
+  const ctx = canvas.getContext('2d');
+  const btn = document.getElementById('start');
+  const eyeDot = document.getElementById('eyeDot');
+  const mouthDot = document.getElementById('mouthDot');
+
+  // Load audio
+  const audioA = new Audio('assets/glass_A_vocal_loop.mp3');
+  const audioB = new Audio('assets/glass_B_beat_loop.mp3');
+  audioA.loop = true; audioB.loop = true;
+  audioA.volume = 0.85; audioB.volume = 0.9;
+
+  let eyesClosed=false, mouthOpen=false;
+  let eyesEMA=0, mouthEMA=0;
+  const lerp = (a,b,t)=>a+(b-a)*t;
+
+  const L_EYE_TOP=159, L_EYE_BOTTOM=145, R_EYE_TOP=386, R_EYE_BOTTOM=374;
+  const MOUTH_TOP=13, MOUTH_BOTTOM=14, NOSE_BASE=1, CHIN=152;
+  const dist=(a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
+
+  function drawGlass(lm){
+    const w = canvas.width = video.videoWidth;
+    const h = canvas.height = video.videoHeight;
+    const g = ctx.createRadialGradient(w*0.5,h*0.35, 10, w*0.5,h*0.55, Math.max(w,h)*0.8);
+    g.addColorStop(0, 'rgba(255,255,255,0.03)');
+    g.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
+    const strength = mouthOpen ? 0.18 : 0.07;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(200,230,255,${strength})`;
+    ctx.rotate(-Math.PI/12);
+    for(let i=-h;i<w+h;i+=120){ ctx.fillRect(i,-h, 40, h*2); }
+    ctx.setTransform(1,0,0,1,0,0);
+
+    if (eyesClosed){
+      ctx.globalCompositeOperation = 'screen';
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.2;
+      const idsL = [234, 93, 132, 58], idsR = [454, 323, 361, 288];
+      ctx.beginPath(); idsL.forEach((id,idx)=>{ const p=lm[id]; const x=p.x*w, y=p.y*h; idx?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+      ctx.beginPath(); idsR.forEach((id,idx)=>{ const p=lm[id]; const x=p.x*w, y=p.y*h; idx?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function handleResults(res){
+    if(!res || !res.multiFaceLandmarks || !res.multiFaceLandmarks.length) return;
+    const lm = res.multiFaceLandmarks[0];
+    const scale = dist(lm[NOSE_BASE], lm[CHIN]);
+
+    const lEye = dist(lm[L_EYE_TOP], lm[L_EYE_BOTTOM]);
+    const rEye = dist(lm[R_EYE_TOP], lm[R_EYE_BOTTOM]);
+    const eyeMetric = 1 - ((lEye + rEye) / (2*scale));
+    eyesEMA = lerp(eyesEMA, eyeMetric, 0.35);
+    const eyesClosedNow = eyesEMA > 0.62;
+
+    const mouthMetric = dist(lm[MOUTH_TOP], lm[MOUTH_BOTTOM]) / scale;
+    mouthEMA = lerp(mouthEMA, mouthMetric, 0.35);
+    const mouthOpenNow = mouthEMA > 0.28;
+
+    if (eyesClosedNow && !eyesClosed){ audioA.play().catch(()=>{}); }
+    if (!eyesClosedNow && eyesClosed){ audioA.pause(); audioA.currentTime=0; }
+    eyesClosed = eyesClosedNow;
+
+    if (mouthOpenNow && !mouthOpen){ audioB.play().catch(()=>{}); }
+    if (!mouthOpenNow && mouthOpen){ audioB.pause(); audioB.currentTime=0; }
+    mouthOpen = mouthOpenNow;
+
+    eyeDot.classList.toggle('on', eyesClosed);
+    mouthDot.classList.toggle('on', mouthOpen);
+    drawGlass(lm);
+  }
+
+  const faceMesh = new FaceMesh({locateFile: (f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+  faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+  faceMesh.onResults(handleResults);
+
+  btn.addEventListener('click', async ()=>{
+    btn.disabled = true; btn.textContent = 'Cámara encendida';
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:720}, height:{ideal:1280}}, audio:false});
+    video.srcObject = stream; await video.play();
+    new Camera(video, { onFrame: async () => { await faceMesh.send({image: video}); }, width: video.videoWidth, height: video.videoHeight }).start();
+  });
+})();
+</script>
+</body>
+</html>
