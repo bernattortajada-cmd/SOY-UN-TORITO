@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Glass Pulse — DEBUG</title>
+  <title>Glass Pulse — TAP para iniciar</title>
   <style>
     :root { --bg:#0b0b0c; --fg:#e7e7ea; }
     html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu;}
@@ -12,44 +12,45 @@
     video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform: scaleX(-1);}
     canvas{position:absolute;inset:0;width:100%;height:100%;}
     .ui{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center}
-    .btn{background:#1e1e22;border:1px solid #2b2b31;color:#f4f4f6;padding:10px 14px;border-radius:12px;cursor:pointer}
-    .log{max-width:700px;width:100%;background:#111;border:1px solid #2b2b31;border-radius:12px;padding:10px;font-size:12px;line-height:1.35;white-space:pre-wrap}
-    .ok{color:#9BEF8A} .warn{color:#FFD166} .err{color:#FF6B6B}
     .pill{font-size:12px;opacity:.8;border:1px solid #29292e;padding:6px 10px;border-radius:999px;background:#17171a}
     .dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:#888;margin-right:6px}
     .dot.on{background:#6ee7ff}
+    .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);cursor:pointer}
+    .overlay .cta{background:#ffffff10;border:1px solid #ffffff30;color:#fff;padding:14px 18px;border-radius:14px;font-size:16px;backdrop-filter: blur(6px)}
+    .hint{font-size:13px;opacity:.8;text-align:center;max-width:540px}
   </style>
 </head>
 <body>
 <div class="app">
-  <div class="stage">
+  <div class="stage" id="stage">
     <video id="cam" playsinline muted></video>
     <canvas id="fx"></canvas>
+    <div class="overlay" id="ovl"><div class="cta">Toca para iniciar cámara</div></div>
   </div>
   <div class="ui">
-    <button id="start" class="btn">▶️ Iniciar cámara</button>
     <span class="pill"><span class="dot" id="eyeDot"></span>Ojos cerrados ▸ A</span>
     <span class="pill"><span class="dot" id="mouthDot"></span>Boca abierta ▸ B</span>
-  <
-  <div class="log" id="log"></div>
+  </div>
+  <p class="hint">Coloca tus audios en <code>assets/</code> con los nombres: <code>glass_A_vocal_loop.mp3</code> y <code>glass_B_beat_loop.mp3</code>. Si usas WAV, cambia las rutas dentro del script.</p>
 </div>
-<script>
-const logEl = document.getElementById('log');
-function log(msg, cls=''){ const span=document.createElement('div'); if(cls) span.className=cls; span.textContent=msg; logEl.appendChild(span); logEl.scrollTop = logEl.scrollHeight; }
-window.addEventListener('error', e=>log('JS ERROR: '+e.message, 'err'));
-window.addEventListener('unhandledrejection', e=>log('PROMISE REJECTION: '+(e.reason?.message||e.reason), 'err'));
 
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"></script>
+<script>
 (async function(){
   const video = document.getElementById('cam');
   const canvas = document.getElementById('fx');
   const ctx = canvas.getContext('2d');
-  const btn = document.getElementById('start');
+  const ovl = document.getElementById('ovl');
+  const stage = document.getElementById('stage');
   const eyeDot = document.getElementById('eyeDot');
   const mouthDot = document.getElementById('mouthDot');
 
+  // Cambia a .wav si tus archivos son wav
   const audioA = new Audio('assets/glass_A_vocal_loop.wav');
   const audioB = new Audio('assets/glass_B_beat_loop.wav');
-  audioA.loop = true; audioB.loop = true; audioA.volume = 0.85; audioB.volume = 0.9;
+  audioA.loop = true; audioB.loop = true;
+  audioA.volume = 0.85; audioB.volume = 0.9;
 
   let eyesClosed=false, mouthOpen=false;
   let eyesEMA=0, mouthEMA=0;
@@ -60,19 +61,20 @@ window.addEventListener('unhandledrejection', e=>log('PROMISE REJECTION: '+(e.re
   const dist=(a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
 
   function drawGlass(lm){
-    const w = canvas.width = video.videoWidth || canvas.width;
-    const h = canvas.height = video.videoHeight || canvas.height;
-    if(!w||!h){ return; }
+    const w = canvas.width = video.videoWidth;
+    const h = canvas.height = video.videoHeight;
     const g = ctx.createRadialGradient(w*0.5,h*0.35, 10, w*0.5,h*0.55, Math.max(w,h)*0.8);
     g.addColorStop(0, 'rgba(255,255,255,0.03)');
     g.addColorStop(1, 'rgba(0,0,0,0.35)');
     ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
     const strength = mouthOpen ? 0.18 : 0.07;
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = `rgba(200,230,255,${strength})`;
     ctx.rotate(-Math.PI/12);
     for(let i=-h;i<w+h;i+=120){ ctx.fillRect(i,-h, 40, h*2); }
     ctx.setTransform(1,0,0,1,0,0);
+
     if (eyesClosed){
       ctx.globalCompositeOperation = 'screen';
       ctx.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -84,78 +86,51 @@ window.addEventListener('unhandledrejection', e=>log('PROMISE REJECTION: '+(e.re
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  let FaceMeshRef=null, CameraRef=null;
-  async function loadMediapipe(){
-    try{
-      log('Cargando MediaPipe...', 'warn');
-      // load scripts dynamically
-      await new Promise((res, rej)=>{ const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js'; s.onload=res; s.onerror=()=>rej(new Error('No se pudo cargar face_mesh.js')); document.head.appendChild(s); });
-      await new Promise((res, rej)=>{ const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js'; s.onload=res; s.onerror=()=>rej(new Error('No se pudo cargar camera_utils.js')); document.head.appendChild(s); });
-      FaceMeshRef = window.FaceMesh; CameraRef = window.Camera;
-      if(!FaceMeshRef || !CameraRef) throw new Error('MediaPipe no disponible.');
-      log('MediaPipe cargado ✅','ok');
-      return true;
-    }catch(e){
-      log('MediaPipe no cargó: '+e.message, 'err');
-      return false;
-    }
-  }
+  function startAR(){
+    ovl.style.display='none';
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:720}, height:{ideal:1280}}, audio:false})
+      .then(async (s)=>{
+        video.srcObject = s; await video.play();
+        const faceMesh = new FaceMesh({locateFile: (f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
+        faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
+        faceMesh.onResults((res)=>{
+          if(!res || !res.multiFaceLandmarks || !res.multiFaceLandmarks.length) return;
+          const lm = res.multiFaceLandmarks[0];
+          const scale = dist(lm[NOSE_BASE], lm[CHIN]);
+          const lEye = dist(lm[L_EYE_TOP], lm[L_EYE_BOTTOM]);
+          const rEye = dist(lm[R_EYE_TOP], lm[R_EYE_BOTTOM]);
+          const eyeMetric = 1 - ((lEye + rEye) / (2*scale));
+          eyesEMA = lerp(eyesEMA, eyeMetric, 0.35);
+          const eyesClosedNow = eyesEMA > 0.62;
 
-  function startVideoOnly(){
-    log('Iniciando solo cámara (sin AR)...','warn');
-    navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false})
-      .then(s=>{ video.srcObject=s; video.play(); log('Cámara OK ✅','ok'); })
-      .catch(e=>{ log('Error cámara: '+e.message, 'err'); });
-  }
+          const mouthMetric = dist(lm[MOUTH_TOP], lm[MOUTH_BOTTOM]) / scale;
+          mouthEMA = lerp(mouthEMA, mouthMetric, 0.35);
+          const mouthOpenNow = mouthEMA > 0.28;
 
-  async function startAR(){
-    try{
-      btn.disabled = true; btn.textContent='Cámara encendida';
-      const s = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:720}, height:{ideal:1280}}, audio:false});
-      video.srcObject = s; await video.play();
-      log('Cámara OK ✅','ok');
+          if (eyesClosedNow && !eyesClosed){ audioA.play().catch(()=>{}); }
+          if (!eyesClosedNow && eyesClosed){ audioA.pause(); audioA.currentTime=0; }
+          eyesClosed = eyesClosedNow;
+          if (mouthOpenNow && !mouthOpen){ audioB.play().catch(()=>{}); }
+          if (!mouthOpenNow && mouthOpen){ audioB.pause(); audioB.currentTime=0; }
+          mouthOpen = mouthOpenNow;
 
-      const ok = await loadMediapipe();
-      if(!ok){ drawGlass({}); return; }
-
-      const faceMesh = new FaceMesh({locateFile: (f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${f}`});
-      faceMesh.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.6, minTrackingConfidence:0.6 });
-      faceMesh.onResults((res)=>{
-        if(!res || !res.multiFaceLandmarks || !res.multiFaceLandmarks.length) return;
-        const lm = res.multiFaceLandmarks[0];
-        const scale = dist(lm[1], lm[152]);
-        const lEye = dist(lm[159], lm[145]);
-        const rEye = dist(lm[386], lm[374]);
-        const eyeMetric = 1 - ((lEye + rEye) / (2*scale));
-        eyesEMA = lerp(eyesEMA, eyeMetric, 0.35);
-        const eyesClosedNow = eyesEMA > 0.62;
-
-        const mouthMetric = dist(lm[13], lm[14]) / scale;
-        mouthEMA = lerp(mouthEMA, mouthMetric, 0.35);
-        const mouthOpenNow = mouthEMA > 0.28;
-
-        if (eyesClosedNow && !eyesClosed){ audioA.play().catch(()=>{}); }
-        if (!eyesClosedNow && eyesClosed){ audioA.pause(); audioA.currentTime=0; }
-        eyesClosed = eyesClosedNow;
-        if (mouthOpenNow && !mouthOpen){ audioB.play().catch(()=>{}); }
-        if (!mouthOpenNow && mouthOpen){ audioB.pause(); audioB.currentTime=0; }
-        mouthOpen = mouthOpenNow;
-
-        document.getElementById('eyeDot').classList.toggle('on', eyesClosed);
-        document.getElementById('mouthDot').classList.toggle('on', mouthOpen);
-        drawGlass(lm);
+          eyeDot.classList.toggle('on', eyesClosed);
+          mouthDot.classList.toggle('on', mouthOpen);
+          drawGlass(lm);
+        });
+        new Camera(video, { onFrame: async () => { await faceMesh.send({image: video}); }, width: video.videoWidth, height: video.videoHeight }).start();
+      })
+      .catch((e)=>{
+        // mostrar mensaje si falla permiso o cámara
+        ovl.style.display='flex';
+        ovl.querySelector('.cta').textContent = 'Permite el uso de la cámara en el candado del navegador y toca aquí de nuevo';
+        console.error(e);
       });
-
-      new Camera(video, { onFrame: async () => { await faceMesh.send({image: video}); }, width: video.videoWidth, height: video.videoHeight }).start();
-      log('AR iniciado ✅','ok');
-    }catch(e){
-      log('Fallo iniciar AR: '+e.message, 'err');
-      startVideoOnly();
-    }
   }
 
-  btn.addEventListener('click', startAR);
-})();
-</script>
+  // Tocar en cualquier parte del recuadro inicia la cámara
+  stage.addEventListener('click', startAR, {once:true});
+  stage.addEventListener('touchstart', startAR, {once:true});
+})();</script>
 </body>
 </html>
